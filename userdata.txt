@@ -35,3 +35,4 @@ rpm -ivh MQSeriesBCBridge*.rpm
 rpm -qa | grep MQ
 /opt/mqm/bin/setmqinst -i -p /opt/mqm
 su - mqm -c 'dspmqver'
+
