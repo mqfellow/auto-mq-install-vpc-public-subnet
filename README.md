@@ -3,6 +3,7 @@ Install MQ in VPC with public subnet - auto
 
 ```
 
+
 ==========
 
 Automate
@@ -11,9 +12,14 @@ use jq to capture values. https://jqplay.org/
 example describe route - .RouteTables | .[] | .VpcId
 jq --raw-output '.Vpc.VpcId'
 
-MF_KEYPAIR_NAME=mqfellow
+#!/bin/sh
+
+MF_KEYPAIR_NAME=blockchain
 MF_AMI_ID=ami-011b3ccf1bd6db744
+MF_INSTANCE_TYPE=t2.micro
 MF_PUBLIC_IP1=52.86.146.171
+MF_IAM_ROLE=MQFELLOW-S3FullAccess
+MF_USER_DATA_LOCATION=file:///Users/hoffman/workspaces/mq-stuff/userdata.txt
 
 #create vpc
 MF_VPCID=`aws ec2 create-vpc --cidr-block 172.17.0.0/16 | jq --raw-output '.Vpc.VpcId'`
@@ -49,35 +55,139 @@ aws ec2 associate-route-table  --subnet-id $MF_SUBNET_ID --route-table-id $MF_RT
 #describe route table 
 aws ec2 describe-route-tables --route-table-id $MF_RT_TBL_ID
 
-aws ec2 delete-key-pair --key-name $MF_KEYPAIR_NAME
-rm -f $MF_KEYPAIR_NAME.pem
-aws ec2 create-key-pair --key-name $MF_KEYPAIR_NAME --query 'KeyMaterial' --output text > $MF_KEYPAIR_NAME.pem
-chmod 400 $MF_KEYPAIR_NAME.pem
+#optional keypair generation. use existing one
+#aws ec2 delete-key-pair --key-name $MF_KEYPAIR_NAME
+#rm -f $MF_KEYPAIR_NAME.pem
+#aws ec2 create-key-pair --key-name $MF_KEYPAIR_NAME --query 'KeyMaterial' --output text > $MF_KEYPAIR_NAME.pem
+#chmod 400 $MF_KEYPAIR_NAME.pem
 
-MF_SUBNET_GRPID1=`aws ec2 create-security-group --group-name SSHAccess --description "Security group for SSH access" --vpc-id $MF_VPCID | jq --raw-output '.GroupId'`
-echo $MF_SUBNET_GRPID1
+MF_SG_GRPID1=`aws ec2 create-security-group --group-name SSHAccess --description "Security group for SSH access" --vpc-id $MF_VPCID | jq --raw-output '.GroupId'`
+echo $MF_SG_GRPID1
 
-aws ec2 authorize-security-group-ingress --group-id $MF_SUBNET_GRPID1 --protocol tcp --port 22 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $MF_SG_GRPID1 --protocol tcp --port 22 --cidr 0.0.0.0/0
 
-MF_SUBNET_GRPID2=`aws ec2 create-security-group --group-name MQListener --description "Security group for MQListener access" --vpc-id $MF_VPCID | jq --raw-output '.GroupId'`
-echo $MF_SUBNET_GRPID2
+MF_SG_GRPID2=`aws ec2 create-security-group --group-name MQListener --description "Security group for MQListener access" --vpc-id $MF_VPCID | jq --raw-output '.GroupId'`
+echo $MF_SG_GRPID2
 
-aws ec2 authorize-security-group-ingress --group-id $MF_SUBNET_GRPID2 --protocol tcp --port 1414 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $MF_SG_GRPID2 --protocol tcp --port 1414 --cidr 0.0.0.0/0
 
-MF_INSTANCE_IP1=`aws ec2 run-instances --image-id $MF_AMI_ID --count 1 --instance-type t2.micro --key-name $MF_KEYPAIR_NAME --security-group-ids $MF_SUBNET_GRPID1 $MF_SUBNET_GRPID2 --subnet-id $MF_SUBNET_ID | jq --raw-output '.Instances | .[0].InstanceId'`
+MF_INSTANCE_IP1=`aws ec2 run-instances --image-id $MF_AMI_ID --count 1 --instance-type $MF_INSTANCE_TYPE --key-name $MF_KEYPAIR_NAME --security-group-ids $MF_SG_GRPID1 $MF_SG_GRPID2 --subnet-id $MF_SUBNET_ID --iam-instance-profile Name=$MF_IAM_ROLE --user-data $MF_USER_DATA_LOCATION | jq --raw-output '.Instances | .[0].InstanceId'`
 echo $MF_INSTANCE_IP1
-
 
 #optional - create elastic ip to attach to EC2 - aws ec2 allocate-address
 
+# wait for the ec2 to start
+# sleep 40
+
+state=`aws ec2 describe-instances --instance-ids $MF_INSTANCE_IP1 --query 'Reservations[].Instances[0].[State.Name]' --output text
+`
+while [ "$state" != "running" ]
+do
+    sleep 5
+    state=`aws ec2 describe-instances --instance-ids $MF_INSTANCE_IP1 --query 'Reservations[].Instances[0].[State.Name]' --output text`
+    echo $state
+done
+
 #attach public IP to EC2
 aws ec2 associate-address --instance-id $MF_INSTANCE_IP1 --public-ip $MF_PUBLIC_IP1
+
+JSON_STRING=$( jq -n \
+                  --arg vpcId "$MF_VPCID" \
+                  --arg subnetId "$MF_SUBNET_ID" \
+                  --arg internetGatewayId "$MF_IGW_ID" \
+                  --arg routeTableId "$MF_RT_TBL_ID" \
+                  --arg instanceId "$MF_INSTANCE_IP1" \
+                  --arg securityGroupId1 "$MF_SG_GRPID1" \
+                  --arg securityGroupId2 "$MF_SG_GRPID2" \
+                  '{vpcId: $vpcId, subnetId: $subnetId, internetGatewayId: $internetGatewayId, routeTableId: $routeTableId, instanceId: $instanceId, securityGroupId1: $securityGroupId1, securityGroupId2: $securityGroupId2 }' )
+
+echo $JSON_STRING > mq-delete-input.json
+
+
+#!/bin/sh
+
+MF_INSTANCE_IP1=`cat mq-delete-input.json | jq --raw-output '.instanceId'`
+echo $MF_INSTANCE_IP1
+
+MF_SG_GRPID1=`cat mq-delete-input.json | jq --raw-output '.securityGroupId1'`
+echo $MF_SG_GRPID1
+
+MF_SG_GRPID2=`cat mq-delete-input.json | jq --raw-output '.securityGroupId2'`
+echo $MF_SG_GRPID2
+
+MF_SUBNET_ID=`cat mq-delete-input.json | jq --raw-output '.subnetId'`
+echo $MF_SUBNET_ID
+
+MF_RT_TBL_ID=`cat mq-delete-input.json | jq --raw-output '.routeTableId'`
+echo $MF_RT_TBL_ID
+
+MF_IGW_ID=`cat mq-delete-input.json | jq --raw-output '.internetGatewayId'`
+echo $MF_IGW_ID
+
+MF_VPCID=`cat mq-delete-input.json | jq --raw-output '.vpcId'`
+echo $MF_VPCID
+
+aws ec2 terminate-instances --instance-ids $MF_INSTANCE_IP1
+state=`aws ec2 describe-instances --instance-ids $MF_INSTANCE_IP1 --query 'Reservations[].Instances[0].[State.Name]' --output text
+`
+echo $state
+while [ "$state" != "terminated" ]
+do
+    sleep 10
+    state=`aws ec2 describe-instances --instance-ids $MF_INSTANCE_IP1 --query 'Reservations[].Instances[0].[State.Name]' --output text`
+    echo $state
+done
+aws ec2 delete-security-group --group-id $MF_SG_GRPID1
+aws ec2 delete-security-group --group-id $MF_SG_GRPID2
+aws ec2 delete-subnet --subnet-id $MF_SUBNET_ID
+aws ec2 delete-route-table --route-table-id $MF_RT_TBL_ID
+aws ec2 detach-internet-gateway --internet-gateway-id $MF_IGW_ID --vpc-id $MF_VPCID
+aws ec2 delete-internet-gateway --internet-gateway-id $MF_IGW_ID
+aws ec2 delete-vpc --vpc-id $MF_VPCID
+
+i-0dbe42ffe158d581a
+
+aws ec2 terminate-instances --instance-ids i-0dbe42ffe158d581a
+
+aws ec2 describe-instances --instance-ids i-09c3816dba01ec8db --query 'Reservations[].Instances[0].[State.Name]' --output text
+
+=====================
+
+
+
+aws ec2 terminate-instances --instance-ids i-0142a88327f271107
+
+state=`aws ec2 describe-instances --instance-ids i-0142a88327f271107 --query 'Reservations[].Instances[0].[State.Name]' --output text
+`
+while [ "$state" == "running" ]
+do
+    sleep 5
+    state=`aws ec2 describe-instances --instance-ids i-0142a88327f271107 --query 'Reservations[].Instances[0].[State.Name]' --output text`
+    echo $state
+done
+
+vpc-014b2862e6fe061cb
+subnet-08aaf4f9904806ef4
+igw-0ebaeb70b0820fd56
+
+aws ec2 delete-security-group --group-id sg-0f54a4684a4133575
+aws ec2 delete-security-group --group-id sg-0fce912bb46b485d4
+aws ec2 delete-subnet --subnet-id subnet-08aaf4f9904806ef4
+aws ec2 delete-route-table --route-table-id rtb-081675696ad898f5d
+aws ec2 detach-internet-gateway --internet-gateway-id igw-0ebaeb70b0820fd56 --vpc-id vpc-014b2862e6fe061cb
+aws ec2 delete-internet-gateway --internet-gateway-id igw-0ebaeb70b0820fd56
+aws ec2 delete-vpc --vpc-id vpc-014b2862e6fe061cb
+
 
 #connect to EC2
 
 ssh -i "$MF_KEYPAIR_NAME.pem" ec2-user@$MF_PUBLIC_IP1
 
 # then create private subnet for client-app testing.
+
+aws ec2 associate-address --instance-id i-0eb3daaa43ba02eda --public-ip 52.86.146.171
+
+
 
 
 ===========
