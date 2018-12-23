@@ -1,18 +1,23 @@
 #!/bin/sh
 
-MF_KEYPAIR_NAME=blockchain
-MF_AMI_ID=ami-011b3ccf1bd6db744
-MF_INSTANCE_TYPE=t2.micro
-MF_PUBLIC_IP1=52.86.146.171
+#MF_KEYPAIR_NAME=blockchain
+MF_KEYPAIR_NAME=mqfellow-us-west-2
+#MF_AMI_ID=ami-011b3ccf1bd6db744
+MF_AMI_ID=ami-036affea69a1101c9
+MF_INSTANCE_TYPE=t2.large
+#MF_PUBLIC_IP1=52.86.146.171
+MF_PUBLIC_IP1=52.42.174.228
 MF_IAM_ROLE=MQFELLOW-S3FullAccess
 MF_USER_DATA_LOCATION=file:///Users/hoffman/workspaces/mq-stuff/userdata.txt
+#MF_AVAILABILITY_ZONE=us-east-1a
+MF_AVAILABILITY_ZONE=us-west-2a
 
 #create vpc
 MF_VPCID=`aws ec2 create-vpc --cidr-block 172.17.0.0/16 | jq --raw-output '.Vpc.VpcId'`
 echo $MF_VPCID
 
 #create public subnet
-MF_SUBNET_ID=`aws ec2 create-subnet --vpc-id $MF_VPCID --cidr-block 172.17.1.0/24 --availability-zone us-east-1a | jq --raw-output '.Subnet.SubnetId'`
+MF_SUBNET_ID=`aws ec2 create-subnet --vpc-id $MF_VPCID --cidr-block 172.17.1.0/24 --availability-zone $MF_AVAILABILITY_ZONE | jq --raw-output '.Subnet.SubnetId'`
 echo $MF_SUBNET_ID
 
 #create igw
